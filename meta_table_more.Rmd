@@ -1,0 +1,216 @@
+---
+title: "Hisham microbiome metadata summary"
+author: "Cankun Wang"
+date: "`r format(Sys.time(), '%m/%d/%Y')`"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    code_folding: hide
+    toc: false
+    toc_depth: 4
+    toc_float: yes
+number_sections: yes
+---
+
+```{r setup, include=FALSE,results = "hide"}
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(echo = F)
+
+library(boot) 
+# function to hide output
+
+quiet = function(x){
+  sink(tempfile())
+  on.exit(sink())
+  invisible(force(x))
+}
+
+```
+
+
+
+# Load data
+
+Sample 126, 128, 129, 131, 132, 139 are removed from analysis
+
+
+```{r}
+library(data.table)
+library(tableone)
+library(tidyverse)
+library(lubridate)
+# Read metadata
+meta3 <- read.csv("meta_v3.csv", stringsAsFactors = F)
+meta3 <- meta3 %>%
+  column_to_rownames("Sample")
+meta3 <- meta3[,-1]
+colnames(meta3)
+
+meta_subtractDates <- read.csv("meta_subtractDates.csv")
+meta_subtractDates <- meta_subtractDates %>%
+  column_to_rownames("Sample")
+meta_subtractDates <- meta_subtractDates[-3:-4]
+meta_subtractDates$DateDiff_SurgMinusFecal<-NULL
+
+meta <- read.csv("meta.csv")
+
+meta <- meta %>%
+  column_to_rownames("Sample")
+meta <- meta[,-1]
+meta<-meta[15:17]
+colnames(meta)<-c("TWL","TWLperc","EWL")
+meta$TWL<-NULL
+meta$EWL<-NULL
+
+metameta<-merge(meta3,meta,by=0)
+rownames(metameta)<-metameta$Row.names
+metameta$Row.names<-NULL
+
+metametameta<-merge(meta_subtractDates,metameta,by=0)
+rownames(metametameta)<-metametameta$Row.names
+metametameta$Row.names<-NULL
+
+summary(metametameta$TWLperc)
+
+colnames(metametameta)
+
+table(metametameta$surg_and_wtloss)
+
+metameta_pre<-subset(metametameta,metametameta$surg_and_wtloss=="Pre-surgery")
+metameta_pre$Group<-"Pre-surgery"
+metameta_vsg<-subset(metametameta,metametameta$surg_and_wtloss=="VSG+IWL" | metametameta$surg_and_wtloss=="VSG+SWL")
+metameta_vsg$Group<-"VSG+IWL/SWL"
+metameta_rygb<-subset(metametameta,metametameta$surg_and_wtloss=="RYGB+IWL" | metametameta$surg_and_wtloss=="RYGB+SWL")
+metameta_rygb$Group<-"RYGB+IWL/SWL"
+
+metameta<-rbind(metameta_pre,metameta_vsg,metameta_rygb)
+#metameta<-metameta[-2:-3]
+library(gtsummary)
+#metameta$surg_and_wtloss<-NULL
+metameta %>%
+  tbl_summary(by = Group) %>%
+   add_n() %>%
+  add_p() %>% 
+  bold_labels() %>%
+    as_flex_table() %>%
+    flextable::save_as_docx(path="demo_Thur.docx")
+
+
+metameta %>%
+ tbl_summary(
+    type = all_continuous() ~ "continuous2",
+    statistic = all_continuous() ~ c("{median} ({p25}, {p75})", "{min}, {max}"),
+    missing = "no",by = Group  ) %>% 
+   add_n() %>%
+  add_p() %>% 
+  bold_labels() %>%
+    as_flex_table() %>%
+    flextable::save_as_docx(path="demov2_Thur.docx")
+
+metameta %>%
+ tbl_summary(
+    type = all_continuous() ~ "continuous2",
+    statistic = all_continuous() ~ c("{median} ({sd})", "{min}, {max}"),
+    missing = "no",by = Group  ) %>% 
+   add_n() %>%
+  add_p() %>% 
+  bold_labels() %>%
+    as_flex_table() %>%
+    flextable::save_as_docx(path="demov3_Thur.docx")
+
+# subset(metameta,metameta$Group!="Pre-surgery")[22:23] %>%
+#  tbl_summary(
+#     type = all_continuous() ~ "continuous2",
+#     statistic = all_continuous() ~ c("{median} ({p25}, {p75})", "{min}, {max}"),
+#     missing = "no",by = Group  ) %>% 
+#    add_n() %>%
+#   add_p() %>% 
+#   bold_labels() %>%
+#     as_flex_table() %>%
+#     flextable::save_as_docx(path="demo_just_TWL_Thur.docx")
+
+subset(metameta,metameta$Group!="Pre-surgery")[c(1,2,3,22,23)] %>%
+ tbl_summary(
+    type = all_continuous() ~ "continuous2",
+    statistic = all_continuous() ~ c("{median} ({p25}, {p75})", "{min}, {max}"),
+    missing = "no",by = Group  ) %>% 
+   add_n() %>%
+  add_p() %>% 
+  bold_labels() %>%
+    as_flex_table() %>%
+    flextable::save_as_docx(path="demo_just_extra_Thur.docx")
+
+
+
+boxplot(metameta$vig_met_min_per_week~metameta$Group)
+
+```
+
+
+# Summary for all samples
+
+```{r,eval=T}
+
+# Outcome variables in Aim 1 and 2 
+
+
+xvar <- colnames(meta)
+
+tableone <- CreateTableOne(vars = xvar, data = meta,  includeNA = T, test = T, addOverall = T)
+print(tableone)
+DT::datatable(print(tableone, nonnormal = xvar, showAllLevels = T, missing = T,printToggle=F), class = 'cell-border stripe', filter = 'none',fillContainer=F,extensions = 'Buttons', options = list(dom = 'Bfrtip', pageLength = 40,buttons = c( 'csv')))
+
+```
+
+# Summary for RYGB
+
+```{r,eval=T}
+
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("RYGB+SWL", "RYGB+IWL"))
+  
+
+xvar <- colnames(meta)
+
+tableone <- CreateTableOne(vars = xvar, data = meta1,  includeNA = T, test = T, addOverall = T)
+print(tableone)
+DT::datatable(print(tableone, nonnormal = xvar, showAllLevels = T, missing = T,printToggle=F), class = 'cell-border stripe', filter = 'none',fillContainer=F,extensions = 'Buttons', options = list(dom = 'Bfrtip', pageLength = 40,buttons = c( 'csv')))
+
+```
+
+# Summary for VSG
+
+```{r,eval=T}
+
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("VSG+SWL", "VSG+IWL"))
+  
+
+xvar <- colnames(meta)
+
+tableone <- CreateTableOne(vars = xvar, data = meta1,  includeNA = T, test = T, addOverall = T)
+
+print(tableone)
+
+DT::datatable(print(tableone, nonnormal = xvar, showAllLevels = T, missing = T,printToggle=F), class = 'cell-border stripe', filter = 'none',fillContainer=F,extensions = 'Buttons', options = list(dom = 'Bfrtip', pageLength = 40,buttons = c( 'csv')))
+
+
+```
+
+# Summary for Pre
+
+```{r,eval=T}
+
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery"))
+  
+
+xvar <- colnames(meta)
+
+tableone <- CreateTableOne(vars = xvar, data = meta1,  includeNA = T, test = T, addOverall = T)
+print(tableone)
+DT::datatable(print(tableone, nonnormal = xvar, showAllLevels = T, missing = T,printToggle=F), class = 'cell-border stripe', filter = 'none',fillContainer=F,extensions = 'Buttons', options = list(dom = 'Bfrtip', pageLength = 40,buttons = c( 'csv')))
+
+```

@@ -1,0 +1,1316 @@
+---
+title: "butyrate-producing bacteria - enzyme level analysis"
+author: "Cankun Wang and Amy Hite"
+date: "`r format(Sys.time(), '%m/%d/%Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+---
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r setup, include=FALSE}
+# Hide all warnings and messages, show code
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(echo = F)
+
+bioc_packages <- c("EnhancedVolcano")
+cran_packages <- c("enrichR",
+                   "ggpubr",
+                   "pheatmap",
+                   "ggplot2",
+                   "VennDiagram",
+                   "stringr",
+                   "here")
+bioc_np <-
+  bioc_packages[!(bioc_packages %in% installed.packages()[, "Package"])]
+cran_np <-
+  cran_packages[!(cran_packages %in% installed.packages()[, "Package"])]
+
+
+# 'here' pacakge automatically sets working directory for us
+library(here)
+# DESeq2 provides methods to test for differential gene expression (DGE) analysis 
+library(DESeq2)
+# ‘ggplot2’ and its extension for publication ready plots
+library(ggplot2)
+library(ggpubr) 
+# Volcano plot
+#library(EnhancedVolcano) 
+# Heatmap
+library(pheatmap) 
+# enrichR provides functional gene set enrichment analysis
+library(enrichR) 
+library(patchwork)
+#library(phyloseq)
+
+theme_set(theme_bw())
+fontsize = 18L
+theme_update(axis.title.x = element_text(size=fontsize))
+theme_update(axis.title.y = element_text(size=fontsize))
+theme_update(plot.title = element_text(size=fontsize+2))
+#library(lefser)
+library(Seurat)
+library(tidyverse)
+```
+
+# Task
+
+Enzyme search page: https://enzyme.expasy.org/enzyme-search-ec.html
+
+
+# Load data
+
+Sample 126, 128, 129, 131, 132, 139 are removed from analysis
+
+```{r}
+
+counts <- read.csv("gene_family_uniref90_level4ec_butyrate.csv", row.names = 1)
+# Read metadata
+meta <- read.csv("meta_v2.csv", stringsAsFactors = F)
+remove_idx <- which(meta$ID %in% c(126, 128, 129, 131, 132, 139))
+
+counts <- counts[, -remove_idx]
+meta <- meta[-remove_idx,]
+
+surg <- str_split_fixed(meta$surg_and_wtloss, "\\+", 2)[,1]
+wtloss <- str_split_fixed(meta$surg_and_wtloss, "\\+", 2)[,2]
+wtloss <-gsub("^$","Pre-surgery", wtloss)
+
+#write.csv(count_py, "enzyme_py.csv", row.names = T, col.names = F, quote = F)
+#write.table(count_py, "enzyme_py.txt", row.names = T, col.names = F, quote = F, sep="\t")
+
+all_species <- data.frame(name=rownames(counts))
+
+enzyme_list <- read_lines("./humann_gene_family/selected_enzyme_butyrate.txt")
+enzyme_names <- unique(read.delim("enzyme_names.txt"))
+```
+
+
+```{r, eval=F}
+## subset enzymes
+
+#counts <- read_tsv("./humann_gene_family/gene_family_uniref90_level4ec.tsv")
+#counts <- read.csv("gene_family_uniref90_level4ec.csv", row.names = 1)
+#
+#all_species <- data.frame(name=rownames(counts))
+#
+#enzyme_list <- read_lines("./humann_gene_family/selected_enzyme_butyrate.txt")
+#selected_species <- all_species %>%
+#  dplyr::filter(str_detect(name,paste(enzyme_list, collapse = "|") )) %>%
+#  pull(name)
+#
+#sub_counts <- counts %>%
+#  rownames_to_column("feature") %>%
+#  dplyr::filter(feature %in% selected_species)
+#
+#write.csv(sub_counts, "gene_family_uniref90_level4ec_butyrate.csv", quote = F, row.names = F, col.names = T)
+#write_tsv(sub_counts, "gene_family_uniref90_level4ec_butyrate.tsv")
+
+```
+
+```{r}
+
+table(meta$surg_and_wtloss)
+
+```
+
+## Sample frequency by surg_and_wtloss and gender
+
+```{r}
+
+table(meta$surg_and_wtloss, meta$gender)
+
+```
+
+# Differential test
+
+- The score is from logarithmic discriminant analysis (LDA) that measures combined significance and effect size. 
+
+- A positive LDA score mean the abundance is higher in the group 1 (treatment).
+
+- A negative LDA score mean the abundance is higher in the group 0 (pre-surgery).
+
+- The values under two group named columns are the average abundance in that group.
+
+- All tables are sort alphabetically by the row features by default
+
+## post-RYGB (SWL or IWL) vs pre-surgery
+
+```{r, fig.height=10, fig.width=6}
+idx <- 1
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery", "RYGB+SWL", "RYGB+IWL"))
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$surg_and_wtloss)
+levels(tmp_ident) <- c("Pre-surgery", "RYGB", "RYGB")
+meta1$surg_and_wtloss <- tmp_ident
+
+
+count_py1 <- rbind(as.character(meta1$surg_and_wtloss), colnames(counts1), counts1)
+rownames(count_py1)[1] <- "condition"
+rownames(count_py1)[2] <- "sample_id"
+
+#write.table(count_py1, paste0("./analysis_enzyme_butyrate/enzyme_py", idx,".txt"), row.names = T, col.names = F, quote = F, sep="\t")
+
+res <- read.table(paste0("./analysis_enzyme_butyrate/enzyme_py", idx,".res"), sep = "\t")
+
+STable5_RYGB_butyrate_enzymes <- read.csv("D:/Documents/cankun_hisham/STable5_RYGB_butyrate_enzymes.txt", sep="")
+STable5_RYGB_butyrate_enzymes$rm<-1
+STable5_RYGB_butyrate_enzymes$Remove <- paste0('f_',STable5_RYGB_butyrate_enzymes$Remove)
+STable5_RYGB_butyrate_enzymes$Remove <- gsub("\\.","_",STable5_RYGB_butyrate_enzymes$Remove)
+STable5_RYGB_butyrate_enzymes$Remove <- gsub("\\|",".",STable5_RYGB_butyrate_enzymes$Remove)
+
+res_rm<-merge(res,STable5_RYGB_butyrate_enzymes,by.x="V1",by.y="Remove",all.x=T,all.y=T)
+rest<-subset(res_rm,is.na(res_rm$rm))
+rest$rm<-NULL
+res<-rest
+
+rownames(meta1) <- meta1$Sample
+seu <- CreateSeuratObject(counts1, meta.data = meta1)
+Idents(seu) <- seu$surg_and_wtloss
+ave1 <- AverageExpression(seu, slot = "counts", group.by = "surg_and_wtloss")$RNA
+ave1 <- as.data.frame(ave1)
+ave1$V1 <- paste0('f-',rownames(ave1))
+res1 <- res
+res1$V1 <- gsub("\\_","-",res1$V1)
+res1$V1 <- gsub("\\|","-",res1$V1)
+res1$V1 <- gsub("\\.","-",res1$V1)
+ave1$V1 <- gsub("\\_","-",ave1$V1)
+ave1$V1 <- gsub("\\|","-",ave1$V1)
+ave1$V1 <- gsub("\\.","-",ave1$V1)
+
+
+res1 <- res1 %>%
+  left_join(ave1, by="V1") %>%
+  mutate(
+    V4 = case_when(
+      V3 == 'Pre-surgery' ~ -1 * V4,
+      T ~ V4
+    )
+  ) %>%
+  dplyr::select(-V2, -V3)
+res1$V1 <- res$V1
+colnames(res1) <- c("feature", "LDA score", "adjusted p-val", colnames(ave1)[1], colnames(ave1)[2])
+
+res1 <- res1 %>%
+  dplyr::filter(`adjusted p-val` < 0.05 & !is.na(`LDA score`)) 
+  
+sig_species <- str_replace_all(res1$feature, "\\.", "\\|")
+
+# DT::datatable(res1, extensions = c('FixedColumns','Buttons'),
+#               options = list(
+#                 pageLength = 10,
+#                 scrollX = TRUE,
+#                 scrollCollapse = TRUE,
+#                 dom = 'Bfrtip',
+#                 buttons = c('copy', 'csv', 'excel')
+#               ))
+
+res$V1 <- gsub("f_","",res$V1)
+res$V1 <- gsub("\\.","_",res$V1)
+res$V1 <- sub("\\_",".",res$V1)
+res$V1 <- sub("\\_",".",res$V1)
+res$V1 <- sub("\\_",".",res$V1)
+
+res$V1 <- gsub("_g","|g",res$V1)
+res$V1 <- gsub("_s__",".s__",res$V1)
+
+
+#res$V1 <- rownames(counts1)
+res <- res %>%
+  dplyr::filter(`V5` < 0.05 & !is.na(`V4`)) 
+
+rownames(res)<-res$V1
+
+
+df <- counts1[res$V1, ] %>%
+  rownames_to_column("name") %>%
+  gather(Sample, value, -name) %>%
+  left_join(meta1, by = "Sample") %>%
+  mutate(enzyme_id = str_split(name, "\\|", simplify = T)[, 1]) %>%
+  mutate(feature = str_split(name, "\\|", simplify = T)[, 2]) %>%
+  mutate(feature = case_when(feature == "" ~ "sum",
+                             T ~ feature)) %>%
+  mutate(group =
+           case_when(surg_and_wtloss == "RYGB" ~ "post",
+                     T  ~ "pre")) %>%
+  mutate(xtitle = paste0(enzyme_id, "-" , group)) %>%
+  group_by(enzyme_id, group) %>%
+  arrange(xtitle, .by_group = TRUE) 
+
+res2 <- res1 
+res2$enzyme_id <- gsub("f_","",res1$feature)
+res2$enzyme_id <- gsub("_","\\.",res2$enzyme_id)
+res2$enzyme_id <- gsub("\\.g.*","\\",res2$enzyme_id)
+res2$enzyme_id <- gsub("\\.unclassified.*","\\",res2$enzyme_id)
+res2<- res2[,c("enzyme_id", "LDA score")]
+res22 <- res2 %>% distinct(enzyme_id, .keep_all = T) 
+
+df <- df %>%
+  left_join(res22, by="enzyme_id") %>%
+  mutate(xlabel = paste0(enzyme_id, " (", formatC(`LDA score`, digits = 3),")"))
+
+
+#df$value <- log1p(df$value)
+df1 <- df %>%
+  dplyr::filter(feature != "sum")
+df2 <- df %>%
+  dplyr::filter(feature == "sum")
+length(unique(df1$name))
+length(unique(df2$name))
+#23 in df1
+#1 in df2
+
+library(stringr)
+new_list<-as.data.frame(unique(df1$name))
+colnames(new_list)<-c("name")
+new_list$genus <- str_split(new_list$name,"__", simplify = TRUE)[,2]
+new_list$genus <- gsub("\\.s","",new_list$genus)
+new_list$species <- str_split(new_list$name,"__", simplify = TRUE)[,3]
+new_list$enzyme <- str_split(new_list$name,"__", simplify = TRUE)[,1]
+new_list$enzyme <- gsub("\\|g","",new_list$enzyme)
+
+new_list$name <- gsub("_","-",new_list$name)
+new_list$name <- gsub("\\|","-",new_list$name)
+#df2$newname <- gsub("_","-",df2$name)
+#df2$newname <- gsub("\\|","-",df2$newname)
+
+new_list$name2 <- paste0('f-',new_list$name)
+new_list$name2 <- gsub("\\.","_",new_list$name2)
+new_list$name2 <- gsub("\\-g--","\\.g__",new_list$name2)
+new_list$name2 <- gsub("\\|","\\.",new_list$name2)
+new_list$name2 <- gsub("\\.s--","_s__",new_list$name2)
+new_list$name2 <- gsub("\\-","_",new_list$name2)
+new_list$name2 <- gsub("8\\_unclassified","8\\.unclassified",new_list$name2)
+new_list$name2 <- gsub("9\\_unclassified","9\\.unclassified",new_list$name2)
+
+new_list<-merge(new_list,res1,by.x="name2",by.y="feature",all.x=T)
+
+keep<-c("Roseburia")
+
+new_list_filt<-as.data.frame(new_list[new_list$genus %in% keep, ])
+
+
+current<-new_list_filt
+current<-current[order(current[,'species']), ]
+w<-dim(current)
+height<- 4
+width<- 4
+
+pdf(paste("barplot_butyrate/ManualSelectPlots_RYGB_vs_pre_species_trim2_Violin_Select.pdf",sep=""),height=height,width=width)
+plist <- list()
+for(i in 1:dim(current)[1]){
+gene<-current[i,2]
+genus<-current[i,3]
+species<-current[i,4]
+LDA<-round(current[i,6],3)
+p<-round(as.numeric(current[i,7]),4)
+enzyme<-current[i,5]
+
+vln_df = data.frame(Expression = seu[["RNA"]]@data[gene,], cluster = seu$surg_and_wtloss)
+vln_df<-merge(vln_df,meta,by.x=0,by.y="Sample")
+rownames(vln_df)<-vln_df$Row.names
+vln_df$Row.names<-NULL
+s1<-ggplot(vln_df, aes(x = cluster, y = Expression)) + geom_violin( trim=TRUE, scale = "width") + geom_jitter(height = 0, width = 0.1, aes(colour = factor(gender))) +
+  scale_colour_manual(name="colour", values=c( "purple", "green")) +  theme(axis.title.x = element_blank())+ theme(legend.position = "none")  + labs(title = "",
+              subtitle = paste("LDA=",LDA,", adj.p=",p,sep=""),caption = paste(enzyme,species,sep=" "))   + 
+     theme(text = element_text(size = 15)) 
+ #print(s1)
+ a1<- s1 + theme(axis.title.y = element_text(size = 15)) + ylab("relative abundance")
+ plist[[i]]<-a1  
+}
+print(wrap_plots(plist))
+dev.off()
+
+
+
+
+for (gen in unique(new_list$genus)){
+ # gen<-"Klebsiella"
+  current<-subset(new_list,new_list$genus==gen)
+current<-current[order(current[,'species']), ]
+x<-ceiling((dim(current)[1])/3)
+height<-10*x
+width<-20
+if((dim(current)[1])==1){
+  height<-8
+  width<-9
+  }
+if((dim(current)[1])==2){
+  height<-5
+  width<-(20/3)*2
+}
+if((dim(current)[1])>6){
+  height<-20
+  width<-20
+}
+if((dim(current)[1])>9){
+  height<-40
+  width<-40
+}
+if((dim(current)[1])==1){
+  height<-8
+  width<-9
+}
+
+pdf(paste("barplot_butyrate/ManualPlots_RYGB_vs_pre_species_trim2_Violin_",gen,".pdf",sep=""),height=height,width=width)
+plist <- list()
+for(i in 1:dim(current)[1]){
+#i<-1
+gene<-current[i,2]
+genus<-current[i,3]
+species<-current[i,4]
+LDA<-round(current[i,6],3)
+p<-round(as.numeric(current[i,7]),5)
+enzyme<-current[i,5]
+
+
+#  q<-VlnPlot(seu,features=unique(current$name),combine = T,flip=T) &  theme(axis.title.x = element_blank())
+# print(q)
+ 
+ #gene<-"3.1.6.6-g--Bacteroides.s--Bacteroides-xylanisolvens"
+ 
+ 
+vln_df = data.frame(Expression = seu[["RNA"]]@data[gene,], cluster = seu$surg_and_wtloss)
+s1<-ggplot(vln_df, aes(x = cluster, y = Expression)) + geom_violin(aes(fill = cluster), trim=TRUE, scale = "width") + geom_jitter() +  theme(axis.title.x = element_blank())+ theme(legend.position = "none")  + labs(title = "",
+              subtitle = paste("LDA=",LDA,", adj.p=",p,sep=""),caption = paste(enzyme,species,sep=" "))   + 
+     theme(text = element_text(size = 40)) 
+ #print(s1)
+ a1<- s1 + theme(axis.title.y = element_text(size = 40)) + ylab("relative abundance")
+ plist[[i]]<-a1 
+ 
+}
+
+print(wrap_plots(plist))
+dev.off()
+
+  
+}
+
+
+# df1$newname <- gsub("_","-",df1$name)
+# df1$newname <- gsub("\\|","-",df1$newname)
+# #df2$newname <- gsub("_","-",df2$name)
+# #df2$newname <- gsub("\\|","-",df2$newname)
+# pdf("barplot/VSG_vs_pre_species_trim2_Violin.pdf",height=20,width=20)
+# 
+#   #print(VlnPlot(seu,features=unique(df1$newname),combine = T,flip=T))
+#   q1<-VlnPlot(seu,features=unique(df1$newname)[1:20],combine = T,flip=T)
+#   q2<-VlnPlot(seu,features=unique(df1$newname)[21:40],combine = T,flip=T)
+#   q3<-VlnPlot(seu,features=unique(df1$newname)[41:60],combine = T,flip=T)
+#   q4<-VlnPlot(seu,features=unique(df1$newname)[61:79],combine = T,flip=T)
+#   print(q1)
+#  print(q2)
+#  print(q3)
+#  print(q4)
+#  
+#   #print(VlnPlot(seu,features=unique(df2$newname),combine = T,flip=T))
+# 
+# dev.off()
+# df2$newname <- gsub("_","-",df2$name)
+# df2$newname <- gsub("\\|","-",df2$newname)
+# #df2$newname <- gsub("_","-",df2$name)
+# #df2$newname <- gsub("\\|","-",df2$newname)
+# pdf("barplot/VSG_vs_pre_sum_trim2_Violin.pdf",height=20,width=20)
+# 
+#   #print(VlnPlot(seu,features=unique(df2$newname),combine = T,flip=T))
+#  q<- VlnPlot(seu,features=unique(df2$newname),combine = T,flip=T) 
+#  print(q)
+#   #print(VlnPlot(seu,features=unique(df2$newname),combine = T,flip=T))
+# 
+# dev.off()
+
+
+new_list<-as.data.frame(unique(df2$name))
+colnames(new_list)<-c("name")
+# new_list$genus <- str_split(new_list$name,"__", simplify = TRUE)[,2]
+# new_list$genus <- gsub("\\.s","",new_list$genus)
+# new_list$species <- str_split(new_list$name,"__", simplify = TRUE)[,3]
+# new_list$enzyme <- str_split(new_list$name,"__", simplify = TRUE)[,1]
+new_list$enzyme <- new_list$name
+
+
+new_list$name2 <- paste0('f_',new_list$name)
+new_list$name2 <- gsub("\\.","_",new_list$name2)
+# new_list$name2 <- gsub("\\-g--","\\.g__",new_list$name2)
+# new_list$name2 <- gsub("\\|","\\.",new_list$name2)
+# new_list$name2 <- gsub("\\.s--","_s__",new_list$name2)
+# new_list$name2 <- gsub("\\-","_",new_list$name2)
+#new_list$name2 <- gsub("8\\_unclassified","8\\.unclassified",new_list$name2)
+#new_list$name2 <- gsub("9\\_unclassified","9\\.unclassified",new_list$name2)
+
+new_list<-merge(new_list,res1,by.x="name2",by.y="feature",all.x=T)
+
+x<-ceiling((dim(new_list)[1])/3)
+height<-10*x
+width<-20
+if((dim(new_list)[1])==1){
+  height<-8
+  width<-9
+  }
+if((dim(new_list)[1])==2){
+  height<-5
+  width<-(20/3)*2
+}
+if((dim(new_list)[1])>6){
+  height<-20
+  width<-20
+}
+if((dim(new_list)[1])>9){
+  height<-40
+  width<-40
+}
+if((dim(new_list)[1])==1){
+  height<-8
+  width<-9
+}
+
+temp<-merge(new_list,enzyme_names,by.x="enzyme",by.y="feature")
+
+current<-temp
+
+
+#current<-current[order(current[,'species']), ]
+w<-dim(current)
+height<- 4
+width<- 4
+
+pdf(paste("barplot_butyrate/ManualSelectPlots_RYGB_vs_pre_sum_trim2_Violin_SelectButyrate_modEnzName.pdf",sep=""),height=height,width=width)
+plist <- list()
+for(i in 1:dim(current)[1]){
+gene<-current[i,3]
+
+LDA<-round(current[i,4],2)
+p<-round(as.numeric(current[i,5]),4)
+enzyme<-current[i,1]
+enz_name<-current[i,8]
+
+
+vln_df = data.frame(Expression = seu[["RNA"]]@data[gene,], cluster = seu$surg_and_wtloss)
+vln_df<-merge(vln_df,meta,by.x=0,by.y="Sample")
+rownames(vln_df)<-vln_df$Row.names
+vln_df$Row.names<-NULL
+s1<-ggplot(vln_df, aes(x = cluster, y = Expression)) + geom_violin( trim=TRUE, scale = "width") + geom_jitter(height = 0, width = 0.1, aes(colour = factor(gender))) +
+  scale_colour_manual(name="colour", values=c( "purple", "green")) +  theme(axis.title.x = element_blank())+ theme(legend.position = "none")  + labs(title = "",
+              subtitle = paste("LDA=",LDA,", adj.p=",p,sep=""),caption = paste(enzyme,enz_name,sep=" "))    + 
+     theme(text = element_text(size = 15)) 
+ #print(s1)
+ a1<- s1 + theme(axis.title.y = element_text(size = 15)) + ylab("relative abundance")
+ plist[[i]]<-a1  
+}
+print(wrap_plots(plist))
+dev.off()
+
+
+
+pdf(paste("barplot_butyrate/ManualPlots_RYGB_vs_pre_sum_trim2_Violin_enzymes",".pdf",sep=""),height=height,width=width)
+plist <- list()
+
+for (gen in unique(new_list$enzyme)){
+  #gen<-"2.7.2.7"
+  current<-subset(new_list,new_list$enzyme==gen)
+i<-as.numeric(rownames(current))
+gene<-current[1,3]
+LDA<-round(current[1,4],3)
+p<-round(as.numeric(current[1,5]),5)
+enzyme<-current[1,3]
+
+vln_df = data.frame(Expression = seu[["RNA"]]@data[gene,], cluster = seu$surg_and_wtloss)
+vln_df<-merge(vln_df,meta,by.x=0,by.y="Sample")
+rownames(vln_df)<-vln_df$Row.names
+vln_df$Row.names<-NULL
+s1<-ggplot(vln_df, aes(x = cluster, y = Expression)) + geom_violin( trim=TRUE, scale = "width") + geom_jitter(height = 0, width = 0.1, aes(colour = factor(gender))) +
+  scale_colour_manual(name="colour", values=c( "purple", "green")) +  theme(axis.title.x = element_blank())+ theme(legend.position = "none")  + labs(title = "",
+              subtitle = paste("LDA=",LDA,", adj.p=",p,sep=""),caption = paste(enzyme,sep=" "))   + 
+     theme(text = element_text(size = 40)) 
+ #print(s1)
+ a1<- s1 + theme(axis.title.y = element_text(size = 40)) + ylab("relative abundance")
+ plist[[i]]<-a1 
+ 
+ #i<-i+1
+ 
+}
+
+print(wrap_plots(plist))
+dev.off()
+
+
+
+p1 <- ggbarplot(
+  df1,
+  'group',
+  'value',
+  fill = "feature",
+  color = "feature",
+  ylab = "Abundance",
+  xlab = "",
+  palette = get_palette("Set1", length(unique(df$feature)))
+) +
+  rotate_x_text(angle = 45) +
+  facet_grid( enzyme_id ~ .,
+              scales = "free_x",
+              # Let the x axis vary across facets.
+              space = "free_y",
+              # Let the width of facets vary and force all bars to have the same width.
+              switch = "y") +
+  coord_flip() +
+  theme(
+    plot.margin = margin(2, 1, 1, 1, "cm"),
+    strip.placement = "outside",
+    # Place facet labels outside x axis labels.
+    strip.background = element_rect(fill = "white"),
+    # Make facet label background white.
+    #axis.title = element_blank(),
+    strip.text.y.left = element_text(angle = 0),
+    legend.position = "right"
+  )
+
+
+
+
+p2 <- ggbarplot(
+  df2,
+  'group',
+  'value',
+  fill = "feature",
+  color = "feature",
+  ylab = "Abundance",
+  xlab = "",
+  palette = "gray"
+) +
+  rotate_x_text(angle = 45) +
+  facet_grid( enzyme_id ~ .,
+              scales = "free_x",
+              # Let the x axis vary across facets.
+              space = "free_y",
+              # Let the width of facets vary and force all bars to have the same width.
+              switch = "y") +
+  coord_flip() +
+  theme(
+    plot.margin = margin(2, 1, 1, 1, "cm"),
+    strip.placement = "outside",
+    # Place facet labels outside x axis labels.
+    strip.background = element_rect(fill = "white"),
+    # Make facet label background white.
+    #axis.title = element_blank(),
+    strip.text.y.left = element_text(angle = 0),
+    legend.position = "right"
+  )
+
+png(
+  paste0("./barplot_butyrate/RYGB_vs_pre_species_trim1.png"),
+  width = 4500,
+  height = 3000,
+  res = 300
+)
+ print(p1)
+dev.off()
+
+
+png(
+  paste0("./barplot_butyrate/RYGB_vs_pre_sum_trim1.png"),
+  width = 4500,
+  height = 2000,
+  res = 300
+)
+ print(p2)
+ dev.off()
+write.csv(res1, paste0("./barplot_butyrate/Butyrate_RYGB_vs_pre_enzyme_by_species_lda_trim1.csv"), row.names = F)
+
+```
+
+
+## VSG (SWL or IWL)
+
+```{r, fig.height=4, fig.width=6}
+idx <- 2
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery", "VSG+IWL", "VSG+SWL"))
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$surg_and_wtloss)
+levels(tmp_ident) <- c("Pre-surgery", "VSG", "VSG")
+#tmp_ident <- factor(x = tmp_ident, levels = c('Pre-surgery', 'VSG'))
+meta1$surg_and_wtloss <- as.character(tmp_ident)
+
+count_py1 <- rbind(as.character(meta1$surg_and_wtloss), colnames(counts1), counts1)
+rownames(count_py1)[1] <- "condition"
+rownames(count_py1)[2] <- "sample_id"
+write.table(count_py1, paste0("./analysis_enzyme_butyrate/enzyme_py", idx,".txt"), row.names = T, col.names = F, quote = F, sep="\t")
+
+res <- read.table(paste0("./analysis_enzyme_butyrate/enzyme_py", idx,".res"), sep = "\t")
+
+STable6_VSG_butyrate_enzymes <- read.csv("D:/Documents/cankun_hisham/STable6_VSG_butyrate_enzymes.txt", sep="")
+STable6_VSG_butyrate_enzymes$rm<-1
+STable6_VSG_butyrate_enzymes$Remove <- paste0('f_',STable6_VSG_butyrate_enzymes$Remove)
+STable6_VSG_butyrate_enzymes$Remove <- gsub("\\.","_",STable6_VSG_butyrate_enzymes$Remove)
+STable6_VSG_butyrate_enzymes$Remove <- gsub("\\|",".",STable6_VSG_butyrate_enzymes$Remove)
+
+res_rm<-merge(res,STable6_VSG_butyrate_enzymes,by.x="V1",by.y="Remove",all.x=T,all.y=T)
+rest<-subset(res_rm,is.na(res_rm$rm))
+rest$rm<-NULL
+res<-rest
+
+
+rownames(meta1) <- meta1$Sample
+seu <- CreateSeuratObject(counts1, meta.data = meta1)
+Idents(seu) <-  factor(x = seu$surg_and_wtloss, levels = c( 'Pre-surgery','VSG'))
+#seu$surg_and_wtloss <- factor(x = seu$surg_and_wtloss, levels = c('VSG', 'Pre-surgery'))
+ave1 <- AverageExpression(seu, slot = "counts", group.by = "surg_and_wtloss")$RNA
+ave1 <- as.data.frame(ave1)
+ave1$V1 <- paste0('f-',rownames(ave1))
+res1 <- res
+res1$V1 <- gsub("\\_","-",res1$V1)
+res1$V1 <- gsub("\\|","-",res1$V1)
+res1$V1 <- gsub("\\.","-",res1$V1)
+ave1$V1 <- gsub("\\_","-",ave1$V1)
+ave1$V1 <- gsub("\\|","-",ave1$V1)
+ave1$V1 <- gsub("\\.","-",ave1$V1)
+res1 <- res1 %>%
+  left_join(ave1, by="V1") %>%
+  mutate(
+    V4 = case_when(
+      V3 == 'Pre-surgery' ~ -1 * V4,
+      T ~ V4
+    )
+  ) %>%
+  dplyr::select(-V2, -V3)
+res1$V1 <- res$V1
+colnames(res1) <- c("feature", "LDA score", "adjusted p-val", colnames(ave1)[1], colnames(ave1)[2])
+
+res1 <- res1 %>%
+  dplyr::filter(`adjusted p-val` < 0.05 & !is.na(`LDA score`))
+
+# DT::datatable(res1, extensions = c('FixedColumns','Buttons'),
+#               options = list(
+#                 pageLength = 10,
+#                 scrollX = TRUE,
+#                 scrollCollapse = TRUE,
+#                 dom = 'Bfrtip',
+#                 buttons = c('copy', 'csv', 'excel')
+#               ))
+
+res$V1 <- gsub("f_","",res$V1)
+res$V1 <- gsub("\\.","_",res$V1)
+res$V1 <- sub("\\_",".",res$V1)
+res$V1 <- sub("\\_",".",res$V1)
+res$V1 <- sub("\\_",".",res$V1)
+
+res$V1 <- gsub("_g","|g",res$V1)
+res$V1 <- gsub("_s__",".s__",res$V1)
+res$V1 <- gsub("8_unclassified","8|unclassified",res$V1)
+res$V1 <- gsub("9_unclassified","9|unclassified",res$V1)
+
+#res$V1 <- rownames(counts1)
+res <- res %>%
+  dplyr::filter(`V5` < 0.05 & !is.na(`V4`)) 
+
+rownames(res)<-res$V1
+
+
+df <- counts1[res$V1, ] %>%
+  rownames_to_column("name") %>%
+  gather(Sample, value, -name) %>%
+  left_join(meta1, by = "Sample") %>%
+  mutate(enzyme_id = str_split(name, "\\|", simplify = T)[, 1]) %>%
+  mutate(feature = str_split(name, "\\|", simplify = T)[, 2]) %>%
+  mutate(feature = case_when(feature == "" ~ "sum",
+                             T ~ feature)) %>%
+  mutate(group =
+           case_when(surg_and_wtloss == "VSG" ~ "post",
+                     T  ~ "pre")) %>%
+  mutate(xtitle = paste0(enzyme_id, "-" , group)) %>%
+  group_by(enzyme_id, group) %>%
+  arrange(xtitle, .by_group = TRUE)
+
+res2 <- res1 
+res2$enzyme_id <- gsub("f_","",res1$feature)
+res2$enzyme_id <- gsub("_","\\.",res2$enzyme_id)
+res2$enzyme_id <- gsub("\\.g.*","\\",res2$enzyme_id)
+res2$enzyme_id <- gsub("\\.unclassified.*","\\",res2$enzyme_id)
+res2<- res2[,c("enzyme_id", "LDA score")]
+res22 <- res2 %>% distinct(enzyme_id, .keep_all = T) 
+
+df <- df %>%
+  left_join(res22, by="enzyme_id") %>%
+  mutate(xlabel = paste0(enzyme_id, " (", formatC(`LDA score`, digits = 3),")"))
+
+
+#df$value <- log1p(df$value)
+df1 <- df %>%
+  dplyr::filter(feature != "sum")
+df2 <- df %>%
+  dplyr::filter(feature == "sum")
+length(unique(df1$name))
+length(unique(df2$name))
+#2 in df1
+#2 in df2
+
+
+library(stringr)
+new_list<-as.data.frame(unique(df1$name))
+colnames(new_list)<-c("name")
+new_list$genus <- str_split(new_list$name,"__", simplify = TRUE)[,2]
+new_list$genus <- gsub("\\.s","",new_list$genus)
+new_list$species <- str_split(new_list$name,"__", simplify = TRUE)[,3]
+new_list$enzyme <- str_split(new_list$name,"__", simplify = TRUE)[,1]
+new_list$enzyme <- gsub("\\|g","",new_list$enzyme)
+
+new_list$name <- gsub("_","-",new_list$name)
+new_list$name <- gsub("\\|","-",new_list$name)
+#df2$newname <- gsub("_","-",df2$name)
+#df2$newname <- gsub("\\|","-",df2$newname)
+
+new_list$name2 <- paste0('f-',new_list$name)
+new_list$name2 <- gsub("\\.","_",new_list$name2)
+new_list$name2 <- gsub("\\-g--","\\.g__",new_list$name2)
+new_list$name2 <- gsub("\\|","\\.",new_list$name2)
+new_list$name2 <- gsub("\\.s--","_s__",new_list$name2)
+new_list$name2 <- gsub("\\-","_",new_list$name2)
+new_list$name2 <- gsub("8\\_unclassified","8\\.unclassified",new_list$name2)
+new_list$name2 <- gsub("9\\_unclassified","9\\.unclassified",new_list$name2)
+
+new_list<-merge(new_list,res1,by.x="name2",by.y="feature",all.x=T)
+
+for (gen in unique(new_list$genus)){
+ # gen<-"Streptococcus"
+  current<-subset(new_list,new_list$genus==gen)
+current<-current[order(current[,'species']), ]
+x<-ceiling((dim(current)[1])/3)
+height<-10*x
+width<-20
+if((dim(current)[1])==1){
+  height<-8
+  width<-9
+  }
+if((dim(current)[1])==2){
+  height<-5
+  width<-(20/3)*2
+}
+if((dim(current)[1])>6){
+  height<-20
+  width<-20
+}
+if((dim(current)[1])>9){
+  height<-40
+  width<-40
+}
+if((dim(current)[1])==1){
+  height<-8
+  width<-9
+}
+
+pdf(paste("barplot_butyrate/ManualPlots_VSG_vs_pre_species_trim2_Violin_",gen,".pdf",sep=""),height=height,width=width)
+plist <- list()
+for(i in 1:dim(current)[1]){
+#i<-1
+gene<-current[i,2]
+genus<-current[i,3]
+species<-current[i,4]
+LDA<-round(current[i,6],3)
+p<-round(as.numeric(current[i,7]),5)
+enzyme<-current[i,5]
+
+
+#  q<-VlnPlot(seu,features=unique(current$name),combine = T,flip=T) &  theme(axis.title.x = element_blank())
+# print(q)
+ 
+ #gene<-"3.1.6.6-g--Bacteroides.s--Bacteroides-xylanisolvens"
+ 
+ 
+vln_df = data.frame(Expression = seu[["RNA"]]@data[gene,], cluster = seu$surg_and_wtloss)
+s1<-ggplot(vln_df, aes(x = cluster, y = Expression)) + geom_violin(aes(fill = cluster), trim=TRUE, scale = "width") + geom_jitter() +  theme(axis.title.x = element_blank())+ theme(legend.position = "none")  + labs(title = "",
+              subtitle = paste("LDA=",LDA,", adj.p=",p,sep=""),caption = paste(enzyme,species,sep=" ")) + ylab("relative abundance")
+ #print(s1)
+ 
+ plist[[i]]<-s1 
+ 
+}
+
+print(wrap_plots(plist))
+dev.off()
+
+  
+}
+
+
+# df1$newname <- gsub("_","-",df1$name)
+# df1$newname <- gsub("\\|","-",df1$newname)
+# #df2$newname <- gsub("_","-",df2$name)
+# #df2$newname <- gsub("\\|","-",df2$newname)
+# pdf("barplot/VSG_vs_pre_species_trim2_Violin.pdf",height=20,width=20)
+# 
+#   #print(VlnPlot(seu,features=unique(df1$newname),combine = T,flip=T))
+#   q1<-VlnPlot(seu,features=unique(df1$newname)[1:20],combine = T,flip=T)
+#   q2<-VlnPlot(seu,features=unique(df1$newname)[21:40],combine = T,flip=T)
+#   q3<-VlnPlot(seu,features=unique(df1$newname)[41:60],combine = T,flip=T)
+#   q4<-VlnPlot(seu,features=unique(df1$newname)[61:79],combine = T,flip=T)
+#   print(q1)
+#  print(q2)
+#  print(q3)
+#  print(q4)
+#  
+#   #print(VlnPlot(seu,features=unique(df2$newname),combine = T,flip=T))
+# 
+# dev.off()
+# df2$newname <- gsub("_","-",df2$name)
+# df2$newname <- gsub("\\|","-",df2$newname)
+# #df2$newname <- gsub("_","-",df2$name)
+# #df2$newname <- gsub("\\|","-",df2$newname)
+# pdf("barplot/VSG_vs_pre_sum_trim2_Violin.pdf",height=20,width=20)
+# 
+#   #print(VlnPlot(seu,features=unique(df2$newname),combine = T,flip=T))
+#  q<- VlnPlot(seu,features=unique(df2$newname),combine = T,flip=T) 
+#  print(q)
+#   #print(VlnPlot(seu,features=unique(df2$newname),combine = T,flip=T))
+# 
+# dev.off()
+
+
+# new_list<-as.data.frame(unique(df2$name))
+# colnames(new_list)<-c("name")
+# # new_list$genus <- str_split(new_list$name,"__", simplify = TRUE)[,2]
+# # new_list$genus <- gsub("\\.s","",new_list$genus)
+# # new_list$species <- str_split(new_list$name,"__", simplify = TRUE)[,3]
+# # new_list$enzyme <- str_split(new_list$name,"__", simplify = TRUE)[,1]
+# new_list$enzyme <- new_list$name
+# 
+# 
+# new_list$name2 <- paste0('f_',new_list$name)
+# new_list$name2 <- gsub("\\.","_",new_list$name2)
+# # new_list$name2 <- gsub("\\-g--","\\.g__",new_list$name2)
+# # new_list$name2 <- gsub("\\|","\\.",new_list$name2)
+# # new_list$name2 <- gsub("\\.s--","_s__",new_list$name2)
+# # new_list$name2 <- gsub("\\-","_",new_list$name2)
+# new_list$name2 <- gsub("8\\_unclassified","8\\.unclassified",new_list$name2)
+# new_list$name2 <- gsub("9\\_unclassified","9\\.unclassified",new_list$name2)
+# new_list<-merge(new_list,res1,by.x="name2",by.y="feature",all.x=T)
+# 
+# x<-ceiling((dim(new_list)[1])/3)
+# height<-10*x
+# width<-20
+# if((dim(new_list)[1])==1){
+#   height<-8
+#   width<-9
+#   }
+# if((dim(new_list)[1])==2){
+#   height<-5
+#   width<-(20/3)*2
+# }
+# if((dim(new_list)[1])>6){
+#   height<-20
+#   width<-20
+# }
+# if((dim(new_list)[1])>9){
+#   height<-40
+#   width<-40
+# }
+# if((dim(new_list)[1])==1){
+#   height<-8
+#   width<-9
+# }
+# 
+# 
+# pdf(paste("barplot_butyrate/ManualPlots_VSG_vs_pre_sum_trim2_Violin_enzymes",".pdf",sep=""),height=height,width=width)
+# plist <- list()
+# 
+# for (gen in unique(new_list$enzyme)){
+#   #gen<-"2.1.1.131"
+#   current<-subset(new_list,new_list$enzyme==gen)
+# i<-as.numeric(rownames(current))
+# 
+# #for(i in 1:dim(current)[1]){
+# 
+# gene<-current[1,3]
+# LDA<-round(current[1,4],3)
+# p<-round(as.numeric(current[1,5]),5)
+# enzyme<-current[1,3]
+# 
+# 
+# #  q<-VlnPlot(seu,features=unique(current$name),combine = T,flip=T) &  theme(axis.title.x = element_blank())
+# # print(q)
+#  
+#  #gene<-"3.1.6.6-g--Bacteroides.s--Bacteroides-xylanisolvens"
+#  
+#  
+# vln_df = data.frame(Expression = seu[["RNA"]]@data[gene,], cluster = seu$surg_and_wtloss)
+# s1<-ggplot(vln_df, aes(x = cluster, y = Expression)) + geom_violin(aes(fill = cluster), trim=TRUE, scale = "width") + geom_jitter() +  theme(axis.title.x = element_blank())+ theme(legend.position = "none")  + labs(title = "",
+#               subtitle = paste("LDA=",LDA,", adj.p=",p,sep=""),caption = paste(enzyme,"",sep=" "))
+# 
+#  plist[[i]]<-s1 
+#  #i<-i+1
+#  
+# }
+# 
+# print(wrap_plots(plist))
+# dev.off()
+
+p1 <- ggbarplot(
+  df1,
+  'group',
+  'value',
+  fill = "feature",
+  color = "feature",
+  ylab = "Abundance",
+  xlab = "",
+  palette = get_palette("Set1", length(unique(df$feature)))
+) +
+  rotate_x_text(angle = 45) +
+  facet_grid( enzyme_id ~ .,
+              scales = "free_x",
+              # Let the x axis vary across facets.
+              space = "free_y",
+              # Let the width of facets vary and force all bars to have the same width.
+              switch = "y") +
+  coord_flip() +
+  theme(
+    plot.margin = margin(2, 1, 1, 1, "cm"),
+    strip.placement = "outside",
+    # Place facet labels outside x axis labels.
+    strip.background = element_rect(fill = "white"),
+    # Make facet label background white.
+    #axis.title = element_blank(),
+    strip.text.y.left = element_text(angle = 0),
+    legend.position = "right"
+  )
+
+
+
+
+p2 <- ggbarplot(
+  df2,
+  'group',
+  'value',
+  fill = "feature",
+  color = "feature",
+  ylab = "Abundance",
+  xlab = "",
+  palette = "gray"
+) +
+  rotate_x_text(angle = 45) +
+  facet_grid( enzyme_id ~ .,
+              scales = "free_x",
+              # Let the x axis vary across facets.
+              space = "free_y",
+              # Let the width of facets vary and force all bars to have the same width.
+              switch = "y") +
+  coord_flip() +
+  theme(
+    plot.margin = margin(2, 1, 1, 1, "cm"),
+    strip.placement = "outside",
+    # Place facet labels outside x axis labels.
+    strip.background = element_rect(fill = "white"),
+    # Make facet label background white.
+    #axis.title = element_blank(),
+    strip.text.y.left = element_text(angle = 0),
+    legend.position = "right"
+  )
+
+png(
+  paste0("./barplot_butyrate/VSG_vs_pre_species_trim1.png"),
+  width = 4500,
+  height = 2200,
+  res = 300
+)
+print(p1)
+dev.off()
+
+
+# png(
+#   paste0("./barplot_butyrate/VSG_vs_pre_sum_trim1.png"),
+#   width = 4500,
+#   height = 1500,
+#   res = 300
+# )
+# print(p2)
+# dev.off()
+
+
+
+write.csv(res1, paste0("./barplot_butyrate/Butyrate_VSG_vs_pre_enzyme_by_species_lda_trim1.csv"), row.names = F)
+```
+
+
+
+## Females with RYGB SWL vs males with RYGB and SWL 
+
+```{r, fig.height=10, fig.width=6}
+idx <- 3
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("RYGB+SWL"))
+
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$gender)
+#levels(tmp_ident) <- c("Pre-surgery-female", "Surgery-female", "Surgery-female", "Surgery-female", "Surgery-female")
+meta1$surg_and_wtloss <- as.character(tmp_ident)
+count_py1 <- rbind(as.character(meta1$surg_and_wtloss), colnames(counts1), counts1)
+rownames(count_py1)[1] <- "condition"
+rownames(count_py1)[2] <- "sample_id"
+#write.table(count_py1, paste0("./analysis_enzyme_butyrate/enzyme_py", idx,".txt"), row.names = T, col.names = F, quote = F, sep="\t")
+
+res <- read.table(paste0("./analysis_enzyme_butyrate/enzyme_py", idx,".res"), sep = "\t")
+
+rownames(meta1) <- meta1$Sample
+seu <- CreateSeuratObject(counts1, meta.data = meta1)
+Idents(seu) <- seu$surg_and_wtloss
+ave1 <- AverageExpression(seu, slot = "counts", group.by = "surg_and_wtloss")$RNA
+ave1 <- as.data.frame(ave1)
+ave1$V1 <- paste0('f-',rownames(ave1))
+res1 <- res
+res1$V1 <- gsub("\\_","-",res1$V1)
+res1$V1 <- gsub("\\|","-",res1$V1)
+res1$V1 <- gsub("\\.","-",res1$V1)
+ave1$V1 <- gsub("\\_","-",ave1$V1)
+ave1$V1 <- gsub("\\|","-",ave1$V1)
+ave1$V1 <- gsub("\\.","-",ave1$V1)
+res1 <- res1 %>%
+  left_join(ave1, by="V1") %>%
+  mutate(
+    V4 = case_when(
+      V3 == 'M' ~ -1 * V4,
+      T ~ V4
+    )
+  ) %>%
+  dplyr::select(-V2, -V3)
+res1$V1 <- res$V1
+colnames(res1) <- c("feature", "LDA score", "adjusted p-val", colnames(ave1)[1], colnames(ave1)[2])
+
+res1 <- res1 %>%
+  dplyr::filter(`adjusted p-val` < 0.05 & !is.na(`LDA score`))
+  #dplyr::filter(str_detect(feature,paste(species_list, collapse = "|") ))
+
+DT::datatable(res1, extensions = c('FixedColumns','Buttons'),
+              options = list(
+                pageLength = 10,
+                scrollX = TRUE,
+                scrollCollapse = TRUE,
+                dom = 'Bfrtip',
+                buttons = c('copy', 'csv', 'excel')
+              ))
+res$V1 <- rownames(counts1)
+res <- res %>%
+  dplyr::filter(`V5` < 0.05 & !is.na(`V4`)) 
+
+
+df <- counts1[res$V1, ] %>%
+  rownames_to_column("name") %>%
+  gather(Sample, value, -name) %>%
+  left_join(meta1, by = "Sample") %>%
+  mutate(enzyme_id = str_split(name, "\\|", simplify = T)[, 1]) %>%
+  mutate(feature = str_split(name, "\\|", simplify = T)[, 2]) %>%
+    mutate(feature = case_when(feature == "" ~ "sum",
+                             T ~ feature)) %>%
+  mutate(group = surg_and_wtloss) %>%
+  mutate(xtitle = paste0(enzyme_id, "-" , group)) %>%
+  group_by(enzyme_id, group) %>%
+  arrange(xtitle, .by_group = TRUE)
+
+res2 <- res1 
+res2$enzyme_id <- gsub("f_","",res1$feature)
+res2$enzyme_id <- gsub("_","\\.",res2$enzyme_id)
+res2$enzyme_id <- gsub("\\.g.*","\\",res2$enzyme_id)
+res2$enzyme_id <- gsub("\\.unclassified.*","\\",res2$enzyme_id)
+res2<- res2[,c("enzyme_id", "LDA score")]
+res22 <- res2 %>% distinct(enzyme_id, .keep_all = T) 
+
+df <- df %>%
+  left_join(res22, by="enzyme_id") %>%
+  mutate(xlabel = paste0(enzyme_id,""))#, " (", formatC(`LDA score`, digits = 3),")"))
+
+
+#df$value <- log1p(df$value)
+
+df1 <- df %>%
+  dplyr::filter(feature != "sum")
+df2 <- df %>%
+  dplyr::filter(feature == "sum")
+
+
+new_list<-as.data.frame(unique(df1$name))
+colnames(new_list)<-c("name")
+new_list$genus <- str_split(new_list$name,"__", simplify = TRUE)[,2]
+new_list$genus <- gsub("\\.s","",new_list$genus)
+new_list$species <- str_split(new_list$name,"__", simplify = TRUE)[,3]
+new_list$enzyme <- str_split(new_list$name,"__", simplify = TRUE)[,1]
+new_list$enzyme <- gsub("\\|g","",new_list$enzyme)
+
+new_list$name <- gsub("_","-",new_list$name)
+new_list$name <- gsub("\\|","-",new_list$name)
+#df2$newname <- gsub("_","-",df2$name)
+#df2$newname <- gsub("\\|","-",df2$newname)
+
+new_list$name2 <- paste0('f-',new_list$name)
+new_list$name2 <- gsub("\\.","_",new_list$name2)
+new_list$name2 <- gsub("\\-g--","\\.g__",new_list$name2)
+new_list$name2 <- gsub("\\|","\\.",new_list$name2)
+new_list$name2 <- gsub("\\.s--","_s__",new_list$name2)
+new_list$name2 <- gsub("\\-","_",new_list$name2)
+new_list$name2 <- gsub("8\\_unclassified","8\\.unclassified",new_list$name2)
+new_list$name2 <- gsub("9\\_unclassified","9\\.unclassified",new_list$name2)
+new_list$name2 <- gsub("4\\_unclassified","4\\.unclassified",new_list$name2)
+new_list$name2 <- gsub("7\\_unclassified","7\\.unclassified",new_list$name2)
+
+new_list<-merge(new_list,res1,by.x="name2",by.y="feature",all.x=T)
+
+for (gen in unique(new_list$genus)){
+ # gen<-"Streptococcus"
+  current<-subset(new_list,new_list$genus==gen)
+current<-current[order(current[,'species']), ]
+x<-ceiling((dim(current)[1])/3)
+height<-10*x
+width<-20
+if((dim(current)[1])==1){
+  height<-8
+  width<-9
+  }
+if((dim(current)[1])==2){
+  height<-5
+  width<-(20/3)*2
+}
+if((dim(current)[1])>6){
+  height<-20
+  width<-20
+}
+if((dim(current)[1])>9){
+  height<-40
+  width<-40
+}
+if((dim(current)[1])==1){
+  height<-8
+  width<-9
+}
+
+pdf(paste("barplot_butyrate/ManualPlots_Female-RYGB-SWL_vs_Male-RYGB-SWL_species_Violin_",gen,".pdf",sep=""),height=height,width=width)
+plist <- list()
+for(i in 1:dim(current)[1]){
+#i<-1
+gene<-current[i,2]
+genus<-current[i,3]
+species<-current[i,4]
+LDA<-round(current[i,6],3)
+p<-round(as.numeric(current[i,7]),5)
+enzyme<-current[i,5]
+
+
+#  q<-VlnPlot(seu,features=unique(current$name),combine = T,flip=T) &  theme(axis.title.x = element_blank())
+# print(q)
+ 
+ #gene<-"3.1.6.6-g--Bacteroides.s--Bacteroides-xylanisolvens"
+ 
+ 
+vln_df = data.frame(Expression = seu[["RNA"]]@data[gene,], cluster = seu$surg_and_wtloss)
+s1<-ggplot(vln_df, aes(x = cluster, y = Expression)) + geom_violin(aes(fill = cluster), trim=TRUE, scale = "width") + geom_jitter() +  theme(axis.title.x = element_blank())+ theme(legend.position = "none")  + labs(title = "",
+              subtitle = paste("LDA=",LDA,", adj.p=",p,sep=""),caption = paste(enzyme,species,sep=" ")) + ylab("relative abundance")
+ #print(s1)
+ 
+ plist[[i]]<-s1 
+ 
+}
+
+print(wrap_plots(plist))
+dev.off()
+
+  
+}
+
+
+
+p1 <- ggbarplot(
+  df1,
+  'group',
+  'value',
+  fill = "feature",
+  color = "feature",
+  ylab = "Abundance",
+  xlab = "",
+  palette = get_palette("Set1", length(unique(df$feature)))
+) +
+  rotate_x_text(angle = 45) +
+  facet_grid( enzyme_id ~ .,
+              scales = "free_x",
+              # Let the x axis vary across facets.
+              space = "free_y",
+              # Let the width of facets vary and force all bars to have the same width.
+              switch = "y") +
+  coord_flip() +
+  theme(
+    plot.margin = margin(2, 1, 1, 1, "cm"),
+    strip.placement = "outside",
+    # Place facet labels outside x axis labels.
+    strip.background = element_rect(fill = "white"),
+    # Make facet label background white.
+    #axis.title = element_blank(),
+    strip.text.y.left = element_text(angle = 0),
+    legend.position = "right"
+  )
+
+
+
+
+
+#p2 <- ggbarplot(
+#  df2,
+#  'group',
+#  'value',
+#  fill = "feature",
+#  color = "feature",
+#  ylab = "Abundance",
+#  xlab = "",
+#  palette = get_palette("Set1", length(unique(df$feature)))
+#) +
+#  rotate_x_text(angle = 45) +
+#  facet_grid( xlabel ~ .,
+#              scales = "free_x",
+#              # Let the x axis vary across facets.
+#              space = "free_y",
+#              # Let the width of facets vary and force all bars to have the same width.
+#              switch = "y") +
+#  coord_flip() +
+#  theme(
+#    plot.margin = margin(2, 1, 1, 1, "cm"),
+#    strip.placement = "outside",
+#    # Place facet labels outside x axis labels.
+#    strip.background = element_rect(fill = "white"),
+#    # Make facet label background white.
+#    #axis.title = element_blank(),
+#    strip.text.y.left = element_text(angle = 0),
+#    legend.position = "right"
+#  )
+
+png(
+  paste0("./barplot_butyrate/Female-RYGB-SWL_vs_Male-RYGB-SWL_species.png"),
+  width = 4500,
+  height = 2200,
+  res = 300
+)
+print(p1)
+dev.off()
+
+
+#png(
+#  paste0("./barplot_butyrate/Female-RYGB-SWL_vs_Male-RYGB-SWL_sum.png"),
+#  width = 4500,
+#  height = 1500,
+#  res = 300
+#)
+#print(p2)
+#dev.off()
+
+
+write.csv(res1, paste0("./barplot_butyrate/Butyrate_Female-RYGB-SWL_vs_Male-RYGB-SW_lda.csv"), row.names = F)
+
+```
+
+

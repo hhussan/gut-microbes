@@ -1,0 +1,398 @@
+---
+title: "Species abundance analysis"
+author: "Cankun Wang"
+date: "`r format(Sys.time(), '%m/%d/%Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: false
+    number_sections: true
+    code_folding: hide
+---
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r setup, include=FALSE}
+# Hide all warnings and messages, show code
+knitr::opts_chunk$set(warning = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(echo = F)
+
+bioc_packages <- c("EnhancedVolcano")
+cran_packages <- c("enrichR",
+                   "ggpubr",
+                   "pheatmap",
+                   "ggplot2",
+                   "VennDiagram",
+                   "stringr",
+                   "here")
+bioc_np <-
+  bioc_packages[!(bioc_packages %in% installed.packages()[, "Package"])]
+cran_np <-
+  cran_packages[!(cran_packages %in% installed.packages()[, "Package"])]
+if (!require("BiocManager"))
+  install.packages("BiocManager")
+
+if (length(cran_np)) {
+  install.packages(cran_np)
+}
+
+if (length(bioc_np)) {
+  BiocManager::install(bioc_np)
+}
+
+# 'here' pacakge automatically sets working directory for us
+library(here)
+# DESeq2 provides methods to test for differential gene expression (DGE) analysis 
+library(DESeq2)
+# ‘ggplot2’ and its extension for publication ready plots
+library(ggplot2)
+library(ggpubr) 
+# Volcano plot
+library(EnhancedVolcano) 
+# Heatmap
+library(pheatmap) 
+# enrichR provides functional gene set enrichment analysis
+library(enrichR) 
+
+library(phyloseq)
+
+theme_set(theme_bw())
+fontsize = 18L
+theme_update(axis.title.x = element_text(size=fontsize))
+theme_update(axis.title.y = element_text(size=fontsize))
+theme_update(plot.title = element_text(size=fontsize+2))
+library(lefser)
+library(Seurat)
+library(tidyverse)
+```
+
+# Load data
+
+Sample 126, 128, 129, 131, 132, 139 are removed from analysis
+
+```{r}
+
+counts <- read.csv("species_abundance.csv", row.names = 1)
+
+# Read metadata
+meta <- read.csv("meta_v2.csv", stringsAsFactors = F)
+
+remove_idx <- which(meta$ID %in% c(126, 128, 129, 131, 132, 139))
+
+counts <- counts[, -remove_idx]
+meta <- meta[-remove_idx,]
+
+surg <- str_split_fixed(meta$surg_and_wtloss, "\\+", 2)[,1]
+wtloss <- str_split_fixed(meta$surg_and_wtloss, "\\+", 2)[,2]
+wtloss <-gsub("^$","Pre-surgery", wtloss)
+
+counts_py_raw <- read.csv("species_abundance.csv", header = F, row.names = 1)
+#count_py <- rbind(surg, wtloss, counts_py_raw)
+count_py <- rbind(meta$surg_and_wtloss, counts_py_raw)
+
+rownames(count_py)[1] <- "surg"
+rownames(count_py)[2] <- "wtloss"
+
+#write.csv(count_py, "species_py.csv", row.names = T, col.names = F, quote = F)
+#write.table(count_py, "species_py.txt", row.names = T, col.names = F, quote = F, sep="\t")
+
+```
+
+
+```{r}
+
+DT::datatable(meta, extensions = c('FixedColumns','Buttons'),
+              options = list(
+                pageLength = 10,
+                scrollX = TRUE,
+                scrollCollapse = TRUE,
+                dom = 'Bfrtip',
+                buttons = c('copy', 'csv', 'excel')
+              ))
+```
+
+## Sample frequency by surg_and_wtloss
+
+```{r}
+
+table(meta$surg_and_wtloss)
+
+```
+
+## Sample frequency by surg_and_wtloss and gender
+
+```{r}
+
+table(meta$surg_and_wtloss, meta$gender)
+
+```
+
+
+# Differential test
+
+- The score is from logarithmic discriminant analysis (LDA) that measures combined significance and effect size. 
+
+- A positive LDA score mean the abundance is higher in the group 1 (treatment).
+
+- A negative LDA score mean the abundance is higher in the group 0 (pre-surgery).
+
+- The values under two group named columns are the average abundance in that group.
+
+- All tables are sort alphabetically by the row features by default
+
+## RYGB (SWL or IWL)
+
+```{r, fig.height=6, fig.width=6}
+idx <- 1
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery", "RYGB+SWL", "RYGB+IWL"))
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$surg_and_wtloss)
+levels(tmp_ident) <- c("Pre-surgery", "RYGB (SWL or IWL)", "RYGB (SWL or IWL)")
+meta1$surg_and_wtloss <- tmp_ident
+
+
+count_py1 <- rbind(as.character(meta1$surg_and_wtloss), colnames(counts1), counts1)
+rownames(count_py1)[1] <- "condition"
+rownames(count_py1)[2] <- "sample_id"
+
+count_py2 <- count_py1 %>%
+  rownames_to_column("col") %>%
+  dplyr::filter(str_detect(col, "s__")) %>%
+  column_to_rownames("col")
+write.table(count_py2, paste0("./analysis/species_py1", idx,".txt"), row.names = T, col.names = F, quote = F, sep="\t")
+
+write.table(count_py1, paste0("./analysis/species_py", idx,".txt"), row.names = T, col.names = F, quote = F, sep="\t")
+
+res <- read.table(paste0("./analysis/species_py", idx,".res"), sep = "\t")
+
+
+obj <- SummarizedExperiment(assays=list(counts=counts1),colData=meta1)
+res <- lefser(obj, groupCol = "surg_and_wtloss", lda.threshold = 0.1)
+lefserPlot(res, trim.names = TRUE)
+
+
+res_g<- res %>% dplyr::filter(str_detect(Names, "g__"))  %>% dplyr::filter(str_detect(Names, "s__", negate = TRUE)) 
+lefserPlot(res_g, trim.names = TRUE)
+
+res_s<- res %>% dplyr::filter(str_detect(Names, "s__")) 
+lefserPlot(res_s, trim.names = TRUE)
+
+```
+
+## VSG (SWL or IWL)
+
+```{r, fig.height=4, fig.width=6}
+idx <- 2
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery", "VSG+IWL", "VSG+SWL"))
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$surg_and_wtloss)
+levels(tmp_ident) <- c("Pre-surgery", "VSG (SWL or IWL)", "VSG (SWL or IWL)")
+meta1$surg_and_wtloss <- as.character(tmp_ident)
+
+count_py1 <- rbind(as.character(meta1$surg_and_wtloss), colnames(counts1), counts1)
+rownames(count_py1)[1] <- "condition"
+rownames(count_py1)[2] <- "sample_id"
+write.table(count_py1, paste0("./analysis/species_py", idx,".txt"), row.names = T, col.names = F, quote = F, sep="\t")
+
+obj <- SummarizedExperiment(assays=list(counts=counts1),colData=meta1)
+res <- lefser(obj, groupCol = "surg_and_wtloss", lda.threshold = 0.1)
+
+
+#lefserPlot(res)
+
+res_g<- res %>% dplyr::filter(str_detect(Names, "g__"))   %>% dplyr::filter(str_detect(Names, "s__", negate = TRUE)) 
+lefserPlot(res_g, trim.names = TRUE)
+
+res_s<- res %>% dplyr::filter(str_detect(Names, "s__")) 
+lefserPlot(res_s, trim.names = TRUE)
+
+```
+
+
+## Bariatric surgery with IWL (RYGB or VSG) 
+
+```{r, fig.height=6, fig.width=6}
+idx <- 3
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery", "RYGB+IWL", "VSG+IWL"))
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$surg_and_wtloss)
+levels(tmp_ident) <- c("Pre-surgery", "IWL (RYGB or VSG)", "IWL (RYGB or VSG)")
+meta1$surg_and_wtloss <- factor(tmp_ident, levels = levels(tmp_ident)[c(1, 2)])
+
+obj <- SummarizedExperiment(assays=list(counts=counts1),colData=meta1)
+res <- lefser(obj, groupCol = "surg_and_wtloss", lda.threshold = 0.1)
+
+
+#lefserPlot(res)
+
+res_g<- res %>% dplyr::filter(str_detect(Names, "g__"))  %>% dplyr::filter(str_detect(Names, "s__", negate = TRUE))  
+lefserPlot(res_g, trim.names = TRUE)
+
+res_s<- res %>% dplyr::filter(str_detect(Names, "s__")) 
+lefserPlot(res_s, trim.names = TRUE)
+
+```
+
+
+## Bariatric surgery with SWL (RYGB or VSG) 
+
+```{r, fig.height=6, fig.width=6}
+idx <- 4
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery", "RYGB+SWL", "VSG+SWL"))
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$surg_and_wtloss)
+levels(tmp_ident) <- c("Pre-surgery", "SWL (RYGB or VSG)", "SWL (RYGB or VSG)")
+meta1$surg_and_wtloss <- as.character(tmp_ident)
+
+obj <- SummarizedExperiment(assays=list(counts=counts1),colData=meta1)
+res <- lefser(obj, groupCol = "surg_and_wtloss", lda.threshold = 0.1)
+
+
+#lefserPlot(res)
+
+res_g<- res %>% dplyr::filter(str_detect(Names, "g__"))   %>% dplyr::filter(str_detect(Names, "s__", negate = TRUE)) 
+lefserPlot(res_g, trim.names = TRUE)
+
+res_s<- res %>% dplyr::filter(str_detect(Names, "s__")) 
+lefserPlot(res_s, trim.names = TRUE)
+
+```
+
+## Male with Bariatric surgery 
+
+ERROR: unable to process, possibly due to small number of pre-surgery-male group sample size
+
+- Total samples: 5
+- Pre-surgery(male): 2
+- Surgery-male: 3
+
+
+```{r, fig.height=6, fig.width=6, eval=F}
+idx <- 5
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery", "RYGB+SWL", "VSG+SWL", "RYGB+IWL", "VSG+IWL")) %>%
+  filter(gender == 'M')
+
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$surg_and_wtloss)
+levels(tmp_ident) <- c("Pre-surgery-male", "Surgery-male")
+meta1$surg_and_wtloss <- as.character(tmp_ident)
+
+count_py1 <- rbind(as.character(meta1$surg_and_wtloss), colnames(counts1), counts1)
+rownames(count_py1)[1] <- "condition"
+rownames(count_py1)[2] <- "sample_id"
+
+write.table(count_py1, paste0("./analysis/species_py", idx,".txt"), row.names = T, col.names = F, quote = F, sep="\t")
+table(meta1$surg_and_wtloss)
+obj <- SummarizedExperiment(assays=list(counts=counts1),colData=meta1)
+res <- lefser(obj, groupCol = "surg_and_wtloss", lda.threshold = 0.1)
+
+
+#lefserPlot(res)
+
+res_g<- res %>% dplyr::filter(str_detect(Names, "g__"))   %>% dplyr::filter(str_detect(Names, "s__", negate = TRUE)) 
+lefserPlot(res_g, trim.names = TRUE)
+
+res_s<- res %>% dplyr::filter(str_detect(Names, "s__")) 
+lefserPlot(res_s, trim.names = TRUE)
+
+```
+
+## Female with Bariatric surgery 
+
+```{r, fig.height=6, fig.width=6}
+idx <- 6
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery", "RYGB+SWL", "VSG+SWL", "RYGB+IWL", "VSG+IWL")) %>%
+  filter(gender == 'F')
+
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$surg_and_wtloss)
+levels(tmp_ident) <- c("Pre-surgery-female", "Surgery-female", "Surgery-female", "Surgery-female", "Surgery-female")
+meta1$surg_and_wtloss <- as.character(tmp_ident)
+
+obj <- SummarizedExperiment(assays=list(counts=counts1),colData=meta1)
+res <- lefser(obj, groupCol = "surg_and_wtloss", lda.threshold = 0.1)
+
+
+#lefserPlot(res)
+
+
+res_g<- res %>% dplyr::filter(str_detect(Names, "g__"))   %>% dplyr::filter(str_detect(Names, "s__", negate = TRUE)) 
+lefserPlot(res_g, trim.names = TRUE)
+
+res_s<- res %>% dplyr::filter(str_detect(Names, "s__")) 
+lefserPlot(res_s, trim.names = TRUE)
+
+```
+
+## Females with RYGB SWL pre- vs post
+
+```{r, fig.height=6, fig.width=6}
+idx <- 7
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("Pre-surgery", "RYGB+SWL")) %>%
+  filter(gender == 'F')
+
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$surg_and_wtloss)
+#levels(tmp_ident) <- c("Pre-surgery-female", "Surgery-female", "Surgery-female", "Surgery-female", "Surgery-female")
+meta1$surg_and_wtloss <- as.character(tmp_ident)
+obj <- SummarizedExperiment(assays=list(counts=counts1),colData=meta1)
+res <- lefser(obj, groupCol = "surg_and_wtloss", lda.threshold = 0.1)
+
+
+#lefserPlot(res)
+
+
+res_g<- res %>% dplyr::filter(str_detect(Names, "g__"))   %>% dplyr::filter(str_detect(Names, "s__", negate = TRUE)) 
+lefserPlot(res_g, trim.names = TRUE)
+
+res_s<- res %>% dplyr::filter(str_detect(Names, "s__")) 
+lefserPlot(res_s, trim.names = TRUE)
+
+```
+
+## Females with RYGB SWL vs males with RYGB and SWL 
+
+```{r, fig.height=4, fig.width=6}
+idx <- 8
+meta1 <- meta %>%
+  filter(surg_and_wtloss %in% c("RYGB+SWL"))
+
+counts1 <- counts[ , meta1$Sample]
+
+tmp_ident <- as.factor(meta1$gender)
+#levels(tmp_ident) <- c("Pre-surgery-female", "Surgery-female", "Surgery-female", "Surgery-female", "Surgery-female")
+meta1$surg_and_wtloss <- as.character(tmp_ident)
+obj <- SummarizedExperiment(assays=list(counts=counts1),colData=meta1)
+res <- lefser(obj, groupCol = "surg_and_wtloss", lda.threshold = 0.1)
+
+
+#lefserPlot(res)
+
+
+res_g<- res %>% dplyr::filter(str_detect(Names, "g__"))   %>% dplyr::filter(str_detect(Names, "s__", negate = TRUE)) 
+lefserPlot(res_g, trim.names = TRUE)
+
+res_s<- res %>% dplyr::filter(str_detect(Names, "s__")) 
+lefserPlot(res_s, trim.names = TRUE)
+
+```
